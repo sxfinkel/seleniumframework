@@ -1,0 +1,188 @@
+package com.aexp.wsgcat.seleniumframework;
+
+import com.aexp.wsgcat.seleniumframework.constants.Constants;
+import com.google.common.base.Preconditions;
+import org.apache.log4j.Logger;
+import org.openqa.selenium.NoAlertPresentException;
+import org.openqa.selenium.OutputType;
+import org.openqa.selenium.TakesScreenshot;
+import org.openqa.selenium.WebDriver;
+import org.openqa.selenium.remote.Augmenter;
+import org.openqa.selenium.remote.RemoteWebDriver;
+import org.testng.ITestResult;
+import org.testng.Reporter;
+
+import javax.imageio.ImageIO;
+import java.awt.Rectangle;
+import java.awt.Robot;
+import java.awt.Toolkit;
+import java.awt.image.BufferedImage;
+import java.io.File;
+import java.io.IOException;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.nio.file.Files;
+import java.text.DateFormat;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.LinkedHashMap;
+
+/**
+ * Contains commons features for step.
+ * Created by cteix4 on 08/11/2015.
+ */
+public abstract class BaseStep implements Step {
+
+    /** Logger. **/
+    public static final Logger logger = Logger.getLogger(BaseStep.class);
+
+    /** Screenshot for the step.**/
+    private LinkedHashMap<String, File> screenshotFiles = new LinkedHashMap<String, File>();
+
+    /** If true, should not run validateOutput. **/
+    private boolean skipFullValidation = false;
+
+    /**
+     * Print step info.
+     * @return the step status info.
+     */
+    public String toString() {
+        String stepInfo;
+        String get = "get";
+        String expect = "expect";
+        stepInfo = this.getClass().getSimpleName() + " (";
+
+        boolean firstMethod = true;
+        for (Method method : this.getClass().getMethods()) {
+            if (method.getName().startsWith(get) && !method.getName().equals("getClass")) {
+                String paramName = method.getName().substring(get.length());
+                Object methodResult;
+                try {
+                    methodResult = method.invoke(this);
+                } catch (IllegalAccessException e) {
+                    throw new StepException("Error invoking test method", e);
+                } catch (InvocationTargetException e) {
+                    throw new StepException("Error invoking test method", e);
+                }
+                // see if it should print the expected variable
+                if ((!method.getName().toLowerCase().contains(expect)) || (methodResult != null)) {
+                    if (!firstMethod) {
+                        stepInfo = stepInfo + ", ";
+                    }
+                    stepInfo = stepInfo + paramName + "=" + methodResult;
+                    firstMethod = false;
+                }
+            }
+        }
+        stepInfo = stepInfo + ") ";
+        return stepInfo;
+    }
+
+    /**
+     * Takes a screenshot. Only takes screenshot if the strategy is not using sauce labs.
+     * @param driver the test driver.
+     * @param key description of the screenshot.
+     * @return the screenshot file.
+     */
+    public File takeScreenshot(final WebDriver driver, final String key) {
+        if (!TestingContext.isStrategySauceLabs()) {
+            try {
+                logger.info(Reporter.getCurrentTestResult().getName() + ": " + getClass().getSimpleName() + ": Taking screenshot...");
+
+                Preconditions.checkNotNull(driver, "null driver");
+                Preconditions.checkNotNull(key, "null key");
+
+                ITestResult testResult = Reporter.getCurrentTestResult();
+                DateFormat timeFormat = new SimpleDateFormat("MM.dd.yyyy-HH-mm-ss-S");
+
+
+                String outputDir = testResult.getTestContext().getOutputDirectory();
+                outputDir = outputDir.substring(0, outputDir.lastIndexOf('\\'));
+                // Tries to create a separate folder for screenshots.
+                String newOutput = outputDir + "\\" + Constants.SCREENSHOT_SUBFOLDER;
+                File screenshotFolder = new File(newOutput);
+                if (Files.exists(screenshotFolder.toPath()) || screenshotFolder.mkdir()) {
+                    outputDir = newOutput;
+                }
+
+                String fileName = testResult.getMethod().getMethodName() + "_" + this.getClass().getSimpleName() + "_" + key + "_"
+                        + timeFormat.format(new Date());
+                File saved = new File(outputDir, fileName + ".png");
+                File scrFile;
+
+                if (isAlertPresent(driver)) {
+                    String alertKey = key + "_Alert_PS";
+                    fileName = testResult.getMethod().getMethodName() + "_" + this.getClass().getSimpleName() + "_" + alertKey
+                            + "_" + timeFormat.format(new Date());
+                    saved = new File(outputDir, fileName + ".png");
+
+                    driver.switchTo().alert();
+                    BufferedImage image = new Robot().createScreenCapture(new Rectangle(Toolkit.getDefaultToolkit().getScreenSize()));
+                    ImageIO.write(image, "png", saved);
+                    screenshotFiles.put(alertKey, saved);
+                    driver.switchTo().alert().accept();
+
+                } else if (!isAlertPresent(driver)) {
+                    fileName = testResult.getMethod().getMethodName() + "_" + this.getClass().getSimpleName() + "_" + key + "_" + timeFormat.format(new Date());
+                    saved = new File(outputDir, fileName + ".png");
+
+                    if (driver.getClass().equals(RemoteWebDriver.class)) {
+                        scrFile = ((TakesScreenshot) new Augmenter().augment(driver)).getScreenshotAs(OutputType.FILE);
+                        Files.copy(scrFile.toPath(), saved.toPath());
+                    } else {
+                        scrFile = ((TakesScreenshot) driver).getScreenshotAs(OutputType.FILE);
+                        Files.copy(scrFile.toPath(), saved.toPath());
+                    }
+                    screenshotFiles.put(key, saved);
+                }
+                return saved;
+            } catch (IOException e) {
+                logger.warn("Error copying screenshot to the correct folder." + e);
+                return null;
+            } catch (Exception e) {
+                logger.warn("Error taking screenshot" + e);
+                return null;
+            }
+        } else {
+            return null;
+        }
+    }
+
+    /**
+     * Checks if any alert was popped in the screen.
+     * @param browserSession the browser session.
+     * @return true if alert is present; otherwise, false.
+     */
+    public boolean isAlertPresent(final WebDriver browserSession) {
+        try {
+            browserSession.switchTo().alert();
+            return true;
+        } catch (NoAlertPresentException e) {
+            return false;
+        }
+    }
+
+    /**
+     * Sets skip validation.
+     * @return this step.
+     */
+    public Step skipFullValidation() {
+        return this;
+    }
+
+    /**
+     * Checks if step full validation should be skipped.
+     * @return if to skip, true, else, false.
+     */
+    public boolean isSkipFullValidation() {
+        return skipFullValidation;
+    }
+
+    /**
+     * Gets all screenshot taken in the step.
+     * @return the screenshot in a hashmap format.
+     */
+    public LinkedHashMap<String, File> fetchScreenshotFiles() {
+        return screenshotFiles;
+    }
+}
